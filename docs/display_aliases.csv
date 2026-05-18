@@ -1,0 +1,53 @@
+sid,short_label,category,source
+resource_gold,gold,resource,local-core
+resource_wood,wood,resource,local-core
+resource_ore,ore,resource,local-core
+resource_crystals,crystal,resource,local-core
+resource_gemstones,gems,resource,local-core
+resource_mercury,mercury,resource,local-core
+resource_dust,sulfur,resource,local-core
+camp_fire,camp,chest,map-object
+chest,chest,chest,map-object
+pandora_box,Pandora,chest,map-object
+scroll_box,Scroll,chest,map-object
+enchanted_scroll_box,Scroll+,chest,map-object
+magic_scroll,Scroll,scroll,map-object
+enchanted_magic_scroll,Scroll+,scroll,map-object
+night_2_magic_web,Web,spell,wiki-spells
+magic_web,Web,spell,wiki-spells
+haste,Haste,spell,wiki-spells
+healing_water,Healing,spell,wiki-spells
+inner_light,Inner Light,spell,wiki-spells
+twilight,Twilight,spell,wiki-spells
+magic_arrow,Arrow,spell,wiki-spells
+lightning_bolt,Bolt,spell,wiki-spells
+ice_bolt,Ice Bolt,spell,wiki-spells
+fireball,Fireball,spell,wiki-spells
+chain_lightning,Chain,spell,wiki-spells
+armageddon,Armageddon,spell,wiki-spells
+anti_magic,Anti-Magic,spell,wiki-spells
+black_hole,Black Hole,spell,wiki-spells
+elf_tracker,Tracker,unit,local-core
+twinkle,Twinkle,unit,local-core
+twinkle_upg_alt,Twinkle+,unit,local-core
+ent,Ent,unit,local-core
+esquire,Esquire,unit,local-core
+crossbowman,Crossbow,unit,local-core
+griffin,Griffin,unit,local-core
+angel,Angel,unit,local-core
+archangel,Archangel,unit,local-core
+apotheosis,Apotheosis,unit,local-core
+learning_stone,Stats,encounter,map-object
+gladiator_arena,Arena,encounter,map-object
+sacrificial_shrine,Shrine,encounter,map-object
+fickle_shrine,Shrine,encounter,map-object
+insara_eye,Eye,encounter,map-object
+eternal_dragon,Dragon,encounter,map-object
+chimerologist,Chimerologist,encounter,map-object
+random_hire,Hire,encounter,map-object
+unit_upgrade,Upgrade,encounter,map-object
+trade_lab,Trade,encounter,map-object
+unit_res_trade_lab,Unit Trade,encounter,map-object
+item_market,Market,encounter,map-object
+pocket_dimension,Dimension,encounter,map-object
+town_gate,Gate,encounter,map-object

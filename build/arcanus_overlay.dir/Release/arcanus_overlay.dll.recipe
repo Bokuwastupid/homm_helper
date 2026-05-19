@@ -2,10 +2,10 @@
 <Project>
   <ProjectOutputs>
     <ProjectOutput>
-      <FullPath>D:\projects\helper_HOMM_olden_era\build\x64\Release\ZERO_CHECK</FullPath>
+      <FullPath>D:\projects\HeroesH\homm_helper\build\x64\Release\ZERO_CHECK</FullPath>
     </ProjectOutput>
     <ProjectOutput>
-      <FullPath>D:\projects\helper_HOMM_olden_era\build\Release\arcanus_overlay.dll</FullPath>
+      <FullPath>D:\projects\HeroesH\homm_helper\build\Release\arcanus_overlay.dll</FullPath>
     </ProjectOutput>
   </ProjectOutputs>
   <ContentFiles />

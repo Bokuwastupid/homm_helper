@@ -29,6 +29,7 @@ private:
     Diagnostics& diagnostics_;
     OllamaClient& ollama_;
     float ui_scale_ = 1.0f;
+    int dev_panel_tab_ = 0;
     bool show_object_debug_boxes_ = false;
     bool show_map_grid_boxes_ = true;
     bool show_near_route_arrows_ = false;

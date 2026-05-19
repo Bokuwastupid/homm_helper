@@ -1,6 +1,6 @@
-^D:\PROJECTS\HELPER_HOMM_OLDEN_ERA\CMAKELISTS.TXT
+^D:\PROJECTS\HEROESH\HOMM_HELPER\CMAKELISTS.TXT
 setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -SD:/projects/helper_HOMM_olden_era -BD:/projects/helper_HOMM_olden_era/build --check-stamp-file D:/projects/helper_HOMM_olden_era/build/CMakeFiles/generate.stamp
+D:\vs1\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe -SD:/projects/HeroesH/homm_helper -BD:/projects/HeroesH/homm_helper/build --check-stamp-file D:/projects/HeroesH/homm_helper/build/CMakeFiles/generate.stamp
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone

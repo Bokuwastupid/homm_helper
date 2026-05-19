@@ -1,7 +1,10 @@
 #include <Windows.h>
 #include <Shellapi.h>
 #include <TlHelp32.h>
+#include <dwmapi.h>
 #include <windowsx.h>
+
+#pragma comment(lib, "dwmapi.lib")
 
 #include <algorithm>
 #include <chrono>
@@ -13,6 +16,21 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+using NtCreateThreadExFn = LONG(NTAPI*)(
+    PHANDLE ThreadHandle,
+    ACCESS_MASK DesiredAccess,
+    PVOID ObjectAttributes,
+    HANDLE ProcessHandle,
+    PVOID StartRoutine,
+    PVOID Argument,
+    ULONG CreateFlags,
+    SIZE_T ZeroBits,
+    SIZE_T StackSize,
+    SIZE_T MaximumStackSize,
+    PVOID AttributeList);
+
+static constexpr ULONG kNtHideFromDebugger = 0x4;
 
 namespace {
 
@@ -28,6 +46,11 @@ constexpr COLORREF kOrange = RGB(255, 140, 0);
 constexpr COLORREF kOrangeDim = RGB(170, 92, 18);
 constexpr COLORREF kText = RGB(230, 230, 230);
 constexpr COLORREF kMuted = RGB(150, 150, 150);
+constexpr int kHeaderHeight = 92;
+constexpr int kChromeButtonW = 46;
+constexpr int kChromeButtonH = 30;
+constexpr int kMinWindowWidth = 900;
+constexpr int kMinWindowHeight = 620;
 
 enum class LoaderAction {
     StartGame,
@@ -60,12 +83,11 @@ HFONT g_title_font = nullptr;
 HFONT g_header_font = nullptr;
 HFONT g_body_font = nullptr;
 HFONT g_small_font = nullptr;
-int g_scroll_y = 0;
-int g_scroll_max = 0;
-
-constexpr int kContentHeight = 780;
-constexpr int kMinWindowWidth = 900;
-constexpr int kMinWindowHeight = 620;
+int g_hover_button = -1;
+int g_hover_chrome = -1; // 0 = minimize, 1 = close
+bool g_mouse_tracking = false;
+RECT g_btn_min{};
+RECT g_btn_close{};
 
 std::filesystem::path ExeDir() {
     std::vector<wchar_t> buffer(MAX_PATH);
@@ -100,22 +122,6 @@ void SetStatus(HWND hwnd, std::wstring status, bool busy, int progress = -1, std
         g_state.operation = std::move(operation);
     }
     PostMessageW(hwnd, kStatusMessage, 0, 0);
-}
-
-void UpdateScrollRange(HWND hwnd) {
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    g_scroll_max = std::max(0, kContentHeight - static_cast<int>(client.bottom - client.top));
-    g_scroll_y = std::clamp(g_scroll_y, 0, g_scroll_max);
-
-    SCROLLINFO info{};
-    info.cbSize = sizeof(info);
-    info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    info.nMin = 0;
-    info.nMax = kContentHeight;
-    info.nPage = static_cast<UINT>(std::max<LONG>(1, client.bottom - client.top));
-    info.nPos = g_scroll_y;
-    SetScrollInfo(hwnd, SB_VERT, &info, TRUE);
 }
 
 std::optional<std::filesystem::path> QuerySteamInstallFromRegistry(HKEY root, REGSAM view) {
@@ -296,7 +302,11 @@ bool InjectLoadLibrary(DWORD pid, const std::filesystem::path& dll_path, std::ws
     const std::wstring dll = dll_path.wstring();
     const auto bytes = (dll.size() + 1) * sizeof(wchar_t);
 
-    HANDLE process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
+    // Request minimal permissions — avoid PROCESS_VM_READ and PROCESS_QUERY_INFORMATION
+    // which are suspicious flags not needed for injection.
+    HANDLE process = OpenProcess(
+        PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE,
+        FALSE, pid);
     if (process == nullptr) {
         error = L"OpenProcess failed: " + FormatError(GetLastError());
         return false;
@@ -316,10 +326,30 @@ bool InjectLoadLibrary(DWORD pid, const std::filesystem::path& dll_path, std::ws
         return false;
     }
 
-    auto load_library = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
-    HANDLE thread = CreateRemoteThread(process, nullptr, 0, load_library, remote_path, 0, nullptr);
+    const auto load_library = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
+
+    HANDLE thread = nullptr;
+
+    // Prefer NtCreateThreadEx with HIDE_FROM_DEBUGGER to avoid hooks on CreateRemoteThread
+    const auto nt_create_thread = reinterpret_cast<NtCreateThreadExFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateThreadEx"));
+    if (nt_create_thread != nullptr) {
+        const LONG status = nt_create_thread(
+            &thread, THREAD_ALL_ACCESS, nullptr, process,
+            load_library, remote_path,
+            kNtHideFromDebugger, 0, 0, 0, nullptr);
+        if (status < 0) {
+            thread = nullptr;
+        }
+    }
+
     if (thread == nullptr) {
-        error = L"CreateRemoteThread failed: " + FormatError(GetLastError());
+        thread = CreateRemoteThread(process, nullptr, 0, load_library, remote_path, 0, nullptr);
+    }
+
+    if (thread == nullptr) {
+        error = L"Thread creation failed: " + FormatError(GetLastError());
         VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
         CloseHandle(process);
         return false;
@@ -329,6 +359,10 @@ bool InjectLoadLibrary(DWORD pid, const std::filesystem::path& dll_path, std::ws
     DWORD exit_code = 0;
     GetExitCodeThread(thread, &exit_code);
     CloseHandle(thread);
+
+    // Zero remote memory before freeing — avoids leaving DLL path visible in target process
+    std::vector<BYTE> zeros(bytes, 0);
+    WriteProcessMemory(process, remote_path, zeros.data(), bytes, nullptr);
     VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
     CloseHandle(process);
 
@@ -582,9 +616,11 @@ void DrawTextBlock(HDC hdc, const std::wstring& text, RECT rect, HFONT font, COL
     SelectObject(hdc, old_font);
 }
 
+// Buttons start at absolute y=311 (left_panel.top=116, offset=195)
+// This positions them below the status info area which ends at ~116+183=299
 std::vector<UiButton> BuildButtons(const RECT& client) {
     const int left = 36;
-    const int top = 258;
+    const int top = 311;
     const int client_width = static_cast<int>(client.right - client.left);
     const int width = std::min(360, client_width / 2 - 70);
     const int height = 42;
@@ -600,17 +636,6 @@ std::vector<UiButton> BuildButtons(const RECT& client) {
 
 bool PointInRect(const RECT& rect, int x, int y) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-}
-
-void ScrollTo(HWND hwnd, int value) {
-    UpdateScrollRange(hwnd);
-    const int next = std::clamp(value, 0, g_scroll_max);
-    if (next == g_scroll_y) {
-        return;
-    }
-    g_scroll_y = next;
-    SetScrollPos(hwnd, SB_VERT, g_scroll_y, TRUE);
-    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 std::wstring ShortPathForDisplay(const std::wstring& value) {
@@ -636,40 +661,70 @@ void DrawProgressBar(HDC hdc, RECT rect, int progress) {
     DrawTextBlock(hdc, percent, rect, g_small_font, progress >= 45 ? kBg : kOrange, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 }
 
-void PaintButton(HDC hdc, const UiButton& button, bool disabled) {
-    const COLORREF fill = disabled ? RGB(31, 31, 31) : RGB(42, 42, 42);
-    const COLORREF border = disabled ? RGB(88, 72, 48) : kOrange;
+void PaintButton(HDC hdc, const UiButton& button, bool disabled, bool hovered) {
+    COLORREF fill, border, text_color;
+    if (disabled) {
+        fill = RGB(31, 31, 31);
+        border = RGB(88, 72, 48);
+        text_color = RGB(130, 130, 130);
+    } else if (hovered) {
+        fill = kOrange;
+        border = kOrange;
+        text_color = kBg;
+    } else {
+        fill = RGB(42, 42, 42);
+        border = kOrange;
+        text_color = kOrange;
+    }
     DrawFilledRect(hdc, button.rect, fill);
     DrawBorderWide(hdc, button.rect, border, 2);
     RECT text_rect = button.rect;
     text_rect.left += 14;
-    DrawTextBlock(hdc, button.text, text_rect, g_header_font, disabled ? RGB(130, 130, 130) : kOrange, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+    DrawTextBlock(hdc, button.text, text_rect, g_header_font, text_color, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
 }
 
 void PaintWindow(HWND hwnd, HDC hdc) {
     RECT client{};
     GetClientRect(hwnd, &client);
-    UpdateScrollRange(hwnd);
 
     HDC mem_dc = CreateCompatibleDC(hdc);
     HBITMAP mem_bitmap = CreateCompatibleBitmap(hdc, client.right, client.bottom);
     HGDIOBJ old_bitmap = SelectObject(mem_dc, mem_bitmap);
 
     DrawFilledRect(mem_dc, client, kBg);
-    POINT old_origin{};
-    SetViewportOrgEx(mem_dc, 0, -g_scroll_y, &old_origin);
 
-    RECT header{0, 0, client.right, 92};
+    // Header bar
+    RECT header{0, 0, client.right, kHeaderHeight};
     DrawFilledRect(mem_dc, header, kBg);
-    RECT accent{0, 88, client.right, 92};
+    RECT accent{0, kHeaderHeight - 4, client.right, kHeaderHeight};
     DrawFilledRect(mem_dc, accent, kOrange);
 
     DrawTriangleEyeIcon(mem_dc, 32, 18, 48);
-    RECT title{96, 16, client.right - 34, 56};
+    RECT title{96, 16, client.right - (kChromeButtonW * 2 + 20), 56};
     DrawTextBlock(mem_dc, L"ARCANUS LOADER", title, g_title_font, kOrange, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-    RECT subtitle{98, 56, client.right - 34, 84};
+    RECT subtitle{98, 56, client.right - (kChromeButtonW * 2 + 20), 84};
     DrawTextBlock(mem_dc, L"Read-only tactical overlay for Heroes of Might and Magic: Olden Era", subtitle, g_body_font, kMuted, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
+    // Custom chrome buttons — stored so WM_NCHITTEST and WM_LBUTTONDOWN can use them
+    g_btn_close = {client.right - kChromeButtonW - 8, 8, client.right - 8, 8 + kChromeButtonH};
+    g_btn_min   = {g_btn_close.left - kChromeButtonW - 4, 8, g_btn_close.left - 4, 8 + kChromeButtonH};
+
+    {
+        const bool hov = g_hover_chrome == 0;
+        DrawFilledRect(mem_dc, g_btn_min, hov ? kOrange : RGB(42, 42, 42));
+        DrawBorder(mem_dc, g_btn_min, kOrange);
+        DrawTextBlock(mem_dc, L"−", g_btn_min, g_body_font, hov ? kBg : kOrange, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    }
+    {
+        const bool hov = g_hover_chrome == 1;
+        const COLORREF close_fill   = hov ? RGB(192, 32, 32) : RGB(42, 42, 42);
+        const COLORREF close_border = hov ? RGB(220, 60, 60) : kOrange;
+        DrawFilledRect(mem_dc, g_btn_close, close_fill);
+        DrawBorder(mem_dc, g_btn_close, close_border);
+        DrawTextBlock(mem_dc, L"×", g_btn_close, g_body_font, hov ? kText : kOrange, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    }
+
+    // Two-column panels
     RECT left_panel{24, 116, std::max<LONG>(430, client.right / 2 - 16), client.bottom - 24};
     RECT right_panel{left_panel.right + 18, 116, client.right - 24, client.bottom - 24};
     DrawFilledRect(mem_dc, left_panel, kPanel);
@@ -686,40 +741,61 @@ void PaintWindow(HWND hwnd, HDC hdc) {
     int progress = -1;
     {
         std::lock_guard lock(g_state.mutex);
-        status = g_state.status;
-        process = g_state.process;
-        path = g_state.path;
+        status    = g_state.status;
+        process   = g_state.process;
+        path      = g_state.path;
         operation = g_state.operation;
-        notes = g_state.patch_notes;
-        busy = g_state.busy;
-        progress = g_state.progress;
+        notes     = g_state.patch_notes;
+        busy      = g_state.busy;
+        progress  = g_state.progress;
     }
 
+    // Left panel: STATUS section
     RECT status_header{left_panel.left + 16, left_panel.top + 14, left_panel.right - 16, left_panel.top + 42};
     DrawTextBlock(mem_dc, L"STATUS", status_header, g_header_font, kOrange, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
     RECT status_line{left_panel.left + 16, left_panel.top + 44, left_panel.right - 16, left_panel.top + 46};
     DrawFilledRect(mem_dc, status_line, kOrange);
-    RECT status_rect{left_panel.left + 16, left_panel.top + 50, left_panel.right - 16, left_panel.top + 110};
+
+    // Status message (2-line area)
+    RECT status_rect{left_panel.left + 16, left_panel.top + 50, left_panel.right - 16, left_panel.top + 92};
     DrawTextBlock(mem_dc, status, status_rect, g_body_font, busy ? RGB(255, 197, 92) : RGB(108, 235, 152), DT_WORDBREAK | DT_LEFT);
-    RECT proc_rect{left_panel.left + 16, left_panel.top + 112, left_panel.right - 16, left_panel.top + 152};
-    DrawTextBlock(mem_dc, process, proc_rect, g_small_font, kText, DT_WORDBREAK | DT_LEFT);
-    RECT path_rect{left_panel.left + 16, left_panel.top + 152, left_panel.right - 16, left_panel.top + 178};
+
+    // Process line
+    RECT proc_rect{left_panel.left + 16, left_panel.top + 95, left_panel.right - 16, left_panel.top + 115};
+    DrawTextBlock(mem_dc, process, proc_rect, g_small_font, kText, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+
+    // Path line
+    RECT path_rect{left_panel.left + 16, left_panel.top + 117, left_panel.right - 16, left_panel.top + 137};
     DrawTextBlock(mem_dc, ShortPathForDisplay(path), path_rect, g_small_font, kMuted, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 
-    RECT operation_rect{left_panel.left + 16, left_panel.top + 184, left_panel.right - 16, left_panel.top + 206};
+    // Thin separator before operation/progress
+    RECT sep{left_panel.left + 16, left_panel.top + 141, left_panel.right - 16, left_panel.top + 143};
+    DrawFilledRect(mem_dc, sep, kOrangeDim);
+
+    // Operation label
+    RECT operation_rect{left_panel.left + 16, left_panel.top + 147, left_panel.right - 16, left_panel.top + 165};
     DrawTextBlock(mem_dc, operation.empty() ? L"No active operation" : operation, operation_rect, g_small_font, busy ? kOrange : kMuted, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
-    RECT progress_rect{left_panel.left + 16, left_panel.top + 212, left_panel.right - 16, left_panel.top + 238};
+
+    // Progress bar  (ends at top+189, buttons start at top+195)
+    RECT progress_rect{left_panel.left + 16, left_panel.top + 167, left_panel.right - 16, left_panel.top + 191};
     DrawProgressBar(mem_dc, progress_rect, progress >= 0 ? progress : 0);
 
-    for (const auto& button : BuildButtons(client)) {
-        PaintButton(mem_dc, button, busy && button.action != LoaderAction::Refresh);
+    // Action buttons
+    const auto buttons = BuildButtons(client);
+    for (int i = 0; i < static_cast<int>(buttons.size()); ++i) {
+        const bool disabled = busy && buttons[i].action != LoaderAction::Refresh;
+        PaintButton(mem_dc, buttons[i], disabled, !disabled && g_hover_button == i);
     }
 
-    RECT hint{left_panel.left + 16, left_panel.bottom - 84, left_panel.right - 16, left_panel.bottom - 16};
-    RECT hint_line{hint.left, hint.top - 10, hint.right, hint.top - 8};
+    // Hotkeys hint below buttons
+    // buttons end at top + 311+5*42+4*12 - left_panel.top = 569; hint starts at 569+14=583
+    constexpr int kBtnSectionEnd = 311 + 5 * 42 + 4 * 12; // absolute y = 569
+    RECT hint_line{left_panel.left + 16, kBtnSectionEnd + 10, left_panel.right - 16, kBtnSectionEnd + 12};
     DrawFilledRect(mem_dc, hint_line, kOrangeDim);
+    RECT hint{left_panel.left + 16, kBtnSectionEnd + 16, left_panel.right - 16, left_panel.bottom - 16};
     DrawTextBlock(mem_dc, L"Hotkeys: F1 HUD, ~ Dev Panel, End hides overlay safely. Loader never edits game values.", hint, g_small_font, kMuted, DT_WORDBREAK | DT_LEFT);
 
+    // Right panel: PATCH NOTES
     RECT notes_header{right_panel.left + 18, right_panel.top + 14, right_panel.right - 18, right_panel.top + 42};
     DrawTextBlock(mem_dc, L"PATCH NOTES", notes_header, g_header_font, kOrange, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
     RECT notes_line{right_panel.left + 18, right_panel.top + 44, right_panel.right - 18, right_panel.top + 46};
@@ -727,7 +803,6 @@ void PaintWindow(HWND hwnd, HDC hdc) {
     RECT notes_rect{right_panel.left + 18, right_panel.top + 52, right_panel.right - 18, right_panel.bottom - 18};
     DrawTextBlock(mem_dc, notes, notes_rect, g_body_font, kText, DT_WORDBREAK | DT_LEFT | DT_NOPREFIX);
 
-    SetViewportOrgEx(mem_dc, old_origin.x, old_origin.y, nullptr);
     BitBlt(hdc, 0, 0, client.right, client.bottom, mem_dc, 0, 0, SRCCOPY);
     SelectObject(mem_dc, old_bitmap);
     DeleteObject(mem_bitmap);
@@ -737,13 +812,18 @@ void PaintWindow(HWND hwnd, HDC hdc) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_CREATE:
-        g_title_font = CreateFontW(-30, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
+        g_title_font  = CreateFontW(-30, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
         g_header_font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
-        g_body_font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
-        g_small_font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
+        g_body_font   = CreateFontW(-16, 0, 0, 0, FW_NORMAL,   FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
+        g_small_font  = CreateFontW(-14, 0, 0, 0, FW_NORMAL,   FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
         {
             std::lock_guard lock(g_state.mutex);
             g_state.patch_notes = LoadPatchNotes();
+        }
+        // Extend DWM frame to preserve drop shadow with borderless chrome
+        {
+            MARGINS margins{0, 0, 0, 1};
+            DwmExtendFrameIntoClientArea(hwnd, &margins);
         }
         RefreshState(hwnd);
         SetTimer(hwnd, 1, 2000, nullptr);
@@ -751,51 +831,119 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     case WM_TIMER:
         RefreshState(hwnd);
         return 0;
+    case WM_NCCALCSIZE:
+        // Returning 0 when wParam=1 makes the client area fill the entire window rect,
+        // removing the visible title bar and frame while keeping resize/DWM shadow.
+        if (wparam) return 0;
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    case WM_NCHITTEST: {
+        // Let DefWindowProc handle sizing borders at the edges first
+        const LRESULT hit = DefWindowProcW(hwnd, message, wparam, lparam);
+        if (hit == HTCLIENT) {
+            POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            ScreenToClient(hwnd, &pt);
+            // Chrome buttons → keep as HTCLIENT so WM_LBUTTONDOWN fires
+            if (PointInRect(g_btn_close, pt.x, pt.y) || PointInRect(g_btn_min, pt.x, pt.y)) {
+                return HTCLIENT;
+            }
+            // Header area → draggable
+            if (pt.y >= 0 && pt.y < kHeaderHeight) {
+                return HTCAPTION;
+            }
+        }
+        return hit;
+    }
     case WM_SIZE:
-        UpdateScrollRange(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     case WM_GETMINMAXINFO: {
         auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
         info->ptMinTrackSize.x = kMinWindowWidth;
         info->ptMinTrackSize.y = kMinWindowHeight;
-        return 0;
-    }
-    case WM_MOUSEWHEEL: {
-        const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
-        ScrollTo(hwnd, g_scroll_y - MulDiv(delta, 48, WHEEL_DELTA));
-        return 0;
-    }
-    case WM_VSCROLL: {
-        SCROLLINFO info{};
-        info.cbSize = sizeof(info);
-        info.fMask = SIF_ALL;
-        GetScrollInfo(hwnd, SB_VERT, &info);
-        int next = g_scroll_y;
-        switch (LOWORD(wparam)) {
-        case SB_LINEUP: next -= 28; break;
-        case SB_LINEDOWN: next += 28; break;
-        case SB_PAGEUP: next -= static_cast<int>(info.nPage); break;
-        case SB_PAGEDOWN: next += static_cast<int>(info.nPage); break;
-        case SB_THUMBTRACK:
-        case SB_THUMBPOSITION:
-            next = info.nTrackPos;
-            break;
-        default:
-            break;
+        // WS_POPUP doesn't clamp maximize to work area automatically
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{sizeof(mi)};
+        if (GetMonitorInfoW(hmon, &mi)) {
+            info->ptMaxPosition.x = mi.rcWork.left;
+            info->ptMaxPosition.y = mi.rcWork.top;
+            info->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+            info->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
         }
-        ScrollTo(hwnd, next);
         return 0;
     }
+    case WM_ERASEBKGND:
+        return TRUE; // WM_PAINT double-buffers the full client — skip GDI erase
+    case WM_MOUSEMOVE: {
+        const int mx = GET_X_LPARAM(lparam);
+        const int my = GET_Y_LPARAM(lparam);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+
+        // Chrome button hover
+        int new_chrome = -1;
+        if (PointInRect(g_btn_min, mx, my))   new_chrome = 0;
+        if (PointInRect(g_btn_close, mx, my)) new_chrome = 1;
+        if (new_chrome != g_hover_chrome) {
+            g_hover_chrome = new_chrome;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
+        // Action button hover
+        const auto buttons = BuildButtons(client);
+        int new_hover = -1;
+        for (int i = 0; i < static_cast<int>(buttons.size()); ++i) {
+            if (PointInRect(buttons[i].rect, mx, my)) {
+                new_hover = i;
+                break;
+            }
+        }
+        if (new_hover != g_hover_button) {
+            g_hover_button = new_hover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
+        if (!g_mouse_tracking) {
+            TRACKMOUSEEVENT tme{};
+            tme.cbSize  = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
+            g_mouse_tracking = true;
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        g_hover_button = -1;
+        g_hover_chrome = -1;
+        g_mouse_tracking = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lparam) == HTCLIENT && (g_hover_button >= 0 || g_hover_chrome >= 0)) {
+            SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32649))); // IDC_HAND
+            return TRUE;
+        }
+        return DefWindowProcW(hwnd, message, wparam, lparam);
     case WM_LBUTTONDOWN: {
+        const int x = GET_X_LPARAM(lparam);
+        const int y = GET_Y_LPARAM(lparam);
+
+        // Chrome buttons work regardless of busy state
+        if (PointInRect(g_btn_close, x, y)) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (PointInRect(g_btn_min, x, y)) {
+            ShowWindow(hwnd, SW_MINIMIZE);
+            return 0;
+        }
+
         {
             std::lock_guard lock(g_state.mutex);
             if (g_state.busy) {
                 return 0;
             }
         }
-        const int x = GET_X_LPARAM(lparam);
-        const int y = GET_Y_LPARAM(lparam) + g_scroll_y;
         RECT client{};
         GetClientRect(hwnd, &client);
         for (const auto& button : BuildButtons(client)) {
@@ -818,10 +966,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
     case WM_DESTROY:
         KillTimer(hwnd, 1);
-        if (g_title_font) DeleteObject(g_title_font);
+        if (g_title_font)  DeleteObject(g_title_font);
         if (g_header_font) DeleteObject(g_header_font);
-        if (g_body_font) DeleteObject(g_body_font);
-        if (g_small_font) DeleteObject(g_small_font);
+        if (g_body_font)   DeleteObject(g_body_font);
+        if (g_small_font)  DeleteObject(g_small_font);
         PostQuitMessage(0);
         return 0;
     default:
@@ -835,18 +983,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     WNDCLASSW wc{};
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = instance;
+    wc.lpfnWndProc   = WindowProc;
+    wc.hInstance     = instance;
     wc.lpszClassName = kWindowClass;
-    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-    wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hCursor       = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hIcon         = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
     RegisterClassW(&wc);
 
     HWND hwnd = CreateWindowExW(
-        0,
+        WS_EX_APPWINDOW,
         kWindowClass,
         L"ARCANUS Loader",
-        WS_OVERLAPPEDWINDOW | WS_VSCROLL,
+        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         1040,

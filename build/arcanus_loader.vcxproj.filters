@@ -1,16 +1,16 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="D:\projects\helper_HOMM_olden_era\src\loader\main.cpp">
+    <ClCompile Include="D:\projects\HeroesH\homm_helper\src\loader\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="D:\projects\helper_HOMM_olden_era\CMakeLists.txt" />
+    <CustomBuild Include="D:\projects\HeroesH\homm_helper\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">
-      <UniqueIdentifier>{0AC58386-3E25-36DB-8AEC-2528D73235C2}</UniqueIdentifier>
+      <UniqueIdentifier>{D954EC54-5A2D-3BC0-B441-EB20BBFD1DC9}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

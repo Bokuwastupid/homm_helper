@@ -1,13 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <CustomBuild Include="D:\projects\helper_HOMM_olden_era\build\CMakeFiles\24ed7e3ed7525763ab5d506ddc3dfe34\generate.stamp.rule">
+    <CustomBuild Include="D:\projects\HeroesH\homm_helper\build\CMakeFiles\d5000ccf49576f9100fe7b248db84da5\generate.stamp.rule">
       <Filter>CMake Rules</Filter>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">
-      <UniqueIdentifier>{E3C8F65C-EB6A-393C-BF3C-BEF72195C6E6}</UniqueIdentifier>
+      <UniqueIdentifier>{D15B7174-5061-34AD-9C10-10864B942B06}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

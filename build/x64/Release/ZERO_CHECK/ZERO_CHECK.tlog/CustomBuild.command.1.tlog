@@ -1,6 +1,6 @@
-^D:\PROJECTS\HELPER_HOMM_OLDEN_ERA\BUILD\CMAKEFILES\24ED7E3ED7525763AB5D506DDC3DFE34\GENERATE.STAMP.RULE
+^D:\PROJECTS\HEROESH\HOMM_HELPER\BUILD\CMAKEFILES\D5000CCF49576F9100FE7B248DB84DA5\GENERATE.STAMP.RULE
 setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -SD:/projects/helper_HOMM_olden_era -BD:/projects/helper_HOMM_olden_era/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/projects/helper_HOMM_olden_era/build/ArcanusOverlay.sln
+D:\vs1\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe -SD:/projects/HeroesH/homm_helper -BD:/projects/HeroesH/homm_helper/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/projects/HeroesH/homm_helper/build/ArcanusOverlay.sln
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone

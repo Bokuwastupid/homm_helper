@@ -1,5 +1,30 @@
+# CMake build output
+build/
+out/
+
+# Visual Studio IDE files
+.vs/
+*.user
+*.suo
+CMakeSettings.json
+.cache/
+
+# Compiled binaries and intermediates
+*.exe
+*.dll
+*.lib
+*.pdb
+*.obj
+*.ilk
+*.exp
+
 # Reverse-engineering workspaces / generated dumps
 Il2CppDumper-win-v6.7.46/
 reverse/
-helper_HOMM_olden_era\reverse\il2cppdump\script.json
 helper_HOMM_olden_era/reverse/il2cppdump/script.json
+helper_HOMM_olden_era\reverse\il2cppdump\script.json
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store

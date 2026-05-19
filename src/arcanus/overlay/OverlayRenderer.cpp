@@ -569,7 +569,7 @@ void OverlayRenderer::Render(
     bool dev_panel_visible) {
 #ifdef ARCANUS_WITH_IMGUI
     ApplyArcanusStyle();
-    ImGui::GetStyle().FontScaleMain = ui_scale_;
+    ImGui::GetIO().FontGlobalScale = ui_scale_;
     RenderMapGridDebug(state);
     RenderVisualDebugBoxes(state);
 
@@ -687,16 +687,60 @@ void OverlayRenderer::Render(
     }
 
     if (dev_panel_visible) {
-        ImGui::SetNextWindowSize(ImVec2(820.0f, 620.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(860.0f, 640.0f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowBgAlpha(0.90f);
-        ImGui::Begin("ARCANUS Developer Panel", nullptr, ImGuiWindowFlags_NoCollapse);
-        ImGui::TextColored(ImVec4(0.55f, 0.78f, 1.0f, 1.0f), "ARCANUS read-only diagnostics");
-        ImGui::SameLine();
-        ImGui::TextDisabled("F1 HUD | ~ Dev Panel | End hide");
-        ImGui::Separator();
+        if (ImGui::Begin("ARCANUS Dev Panel", nullptr, ImGuiWindowFlags_NoCollapse)) {
+            ImGui::TextColored(ImVec4(0.55f, 0.78f, 1.0f, 1.0f), "ARCANUS read-only diagnostics");
+            ImGui::SameLine();
+            ImGui::TextDisabled("F1 HUD | ~ Dev Panel | End hide");
+            ImGui::Separator();
 
-        if (ImGui::BeginTabBar("##arcanus-dev-tabs")) {
-            if (ImGui::BeginTabItem("Status")) {
+            // Left sidebar: tab buttons + quick status
+            ImGui::BeginChild("##sidebar", ImVec2(160.0f, 0.0f), true);
+
+            static constexpr const char* kTabLabels[] = {
+                "Status", "ESP", "Scanner", "Database", "AI", "Context", "Logs"
+            };
+            for (int i = 0; i < 7; ++i) {
+                const bool active = dev_panel_tab_ == i;
+                if (active) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 0.55f, 0.0f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.65f, 0.12f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.04f, 0.04f, 0.04f, 1.0f));
+                }
+                if (ImGui::Button(kTabLabels[i], ImVec2(-1.0f, 30.0f))) {
+                    dev_panel_tab_ = i;
+                }
+                if (active) {
+                    ImGui::PopStyleColor(3);
+                }
+                ImGui::Spacing();
+            }
+
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "QUICK STATUS");
+            ImGui::Spacing();
+            {
+                const bool live = state.live_data;
+                ImGui::TextColored(
+                    live ? ImVec4(0.3f, 0.95f, 0.45f, 1.0f) : ImVec4(1.0f, 0.55f, 0.0f, 0.85f),
+                    "Data: %s", live ? "live" : "waiting");
+            }
+            ImGui::TextDisabled("Scanner:");
+            ImGui::TextWrapped("%s", state.scanner_debug.status.c_str());
+            ImGui::TextDisabled("AI: %s", ToString(ai.state).c_str());
+            ImGui::TextDisabled("Hook:");
+            ImGui::TextWrapped("%s", diagnostics_.HookStatus().c_str());
+
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+
+            // Main content area
+            ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f), false);
+
+            switch (dev_panel_tab_) {
+            case 0: { // Status
                 ImGui::Text("Hook: %s", diagnostics_.HookStatus().c_str());
                 ImGui::Text("Scanner latency: %.3f ms", diagnostics_.ScannerLatencyMs());
                 ImGui::Text("GameAssembly base: 0x%p", reinterpret_cast<void*>(diagnostics_.GameAssemblyBase()));
@@ -707,31 +751,24 @@ void OverlayRenderer::Render(
                 ImGui::SliderFloat("UI scale", &ui_scale_, 0.8f, 2.0f, "%.2f");
                 ImGui::Separator();
                 ImGui::TextWrapped("Overlay does not write game values. Route lines are debug direct lines until real pathfinding is implemented.");
-                ImGui::EndTabItem();
+                break;
             }
-
-            if (ImGui::BeginTabItem("ESP")) {
-                const char* camera_mode = last_projection_camera_mode_ == 1
+            case 1: { // ESP
+                const char* camera_mode_str = last_projection_camera_mode_ == 1
                     ? "native camera"
                     : (last_projection_camera_mode_ == 2 ? "managed camera" : "none");
                 ImGui::Text("Projection: %s",
                     use_game_projection_ && last_game_anchor_ok_ ? "game-node -> world -> camera" : "unavailable");
                 ImGui::SameLine();
-                ImGui::TextDisabled("| camera: %s", camera_mode);
+                ImGui::TextDisabled("| camera: %s", camera_mode_str);
                 ImGui::Text("Visible %d | projected %d | boxes %d | labels %d | arrows %d",
-                    last_visible_objects_,
-                    last_projected_objects_,
-                    last_drawn_boxes_,
-                    last_drawn_labels_,
-                    last_drawn_arrows_);
+                    last_visible_objects_, last_projected_objects_,
+                    last_drawn_boxes_, last_drawn_labels_, last_drawn_arrows_);
                 ImGui::Text("filtered %d | offscreen %d | failed %d | no ctx %d",
-                    last_filtered_objects_,
-                    last_offscreen_objects_,
-                    last_projection_failed_,
-                    last_no_projection_context_);
+                    last_filtered_objects_, last_offscreen_objects_,
+                    last_projection_failed_, last_no_projection_context_);
                 ImGui::Text("projection calls/frame %d | budget skips %d",
-                    last_projection_calls_,
-                    last_projection_budget_skips_);
+                    last_projection_calls_, last_projection_budget_skips_);
                 ImGui::Separator();
 
                 ImGui::Checkbox("World object boxes", &show_map_grid_boxes_);
@@ -779,84 +816,75 @@ void OverlayRenderer::Render(
                     ImGui::TableNextColumn(); ImGui::Checkbox("Garrisons", &show_kind_garrison_);
                     ImGui::EndTable();
                 }
-                ImGui::TextColored(
-                    ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
                     "Chests includes normal chests, Pandora boxes, and scroll boxes.");
 
                 ImGui::Separator();
                 ImGui::Checkbox("Use game node projection", &use_game_projection_);
-                const auto managed_camera = DataPointerProbe::UnityCameraPointer();
-                const auto native_camera = UnityObjectNativePointer(managed_camera);
-                ImGui::Text("WorldCamera: 0x%p | UnityCamera: 0x%p | NativeCamera: 0x%p | Map: 0x%p",
-                    reinterpret_cast<void*>(DataPointerProbe::WorldCameraPointer()),
-                    reinterpret_cast<void*>(managed_camera),
-                    reinterpret_cast<void*>(native_camera),
-                    reinterpret_cast<void*>(DataPointerProbe::WorldMapPointer()));
+                {
+                    const auto managed_camera = DataPointerProbe::UnityCameraPointer();
+                    const auto native_camera = UnityObjectNativePointer(managed_camera);
+                    ImGui::Text("WorldCamera: 0x%p | UnityCamera: 0x%p | NativeCamera: 0x%p | Map: 0x%p",
+                        reinterpret_cast<void*>(DataPointerProbe::WorldCameraPointer()),
+                        reinterpret_cast<void*>(managed_camera),
+                        reinterpret_cast<void*>(native_camera),
+                        reinterpret_cast<void*>(DataPointerProbe::WorldMapPointer()));
+                }
                 ImGui::Text("Hero grid: %d,%d | node %d | Mouse: %.0f,%.0f",
-                    state.hero.x,
-                    state.hero.y,
+                    state.hero.x, state.hero.y,
                     state.scanner_debug.selected_hero_node,
-                    ImGui::GetIO().MousePos.x,
-                    ImGui::GetIO().MousePos.y);
+                    ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y);
                 ImGui::Text("Turn phase/mode: %d/%d | side state: %d (%s)",
-                    state.scanner_debug.turn_phase,
-                    state.scanner_debug.turn_mode,
+                    state.scanner_debug.turn_phase, state.scanner_debug.turn_mode,
                     state.scanner_debug.side_current_state,
                     SideStateName(state.scanner_debug.side_current_state));
 
-                int reward_rows = 0;
-                for (const auto& object : state.visible_objects) {
-                    if (!object.reward_preview.empty()) {
-                        ++reward_rows;
-                    }
-                }
-                ImGui::Separator();
-                ImGui::Text("Object reward previews %d | rows on screen %d",
-                    state.scanner_debug.object_reward_preview_count,
-                    reward_rows);
-                ImGui::Text("Side RewardSets total %d | linked %d | unmatched %d",
-                    state.scanner_debug.reward_set_count,
-                    state.scanner_debug.reward_preview_linked_count,
-                    state.scanner_debug.reward_preview_unmatched_count);
-                ImGui::TextWrapped("Object rewards: %s",
-                    state.scanner_debug.object_reward_sets_preview.empty()
-                        ? "-"
-                        : state.scanner_debug.object_reward_sets_preview.c_str());
-                if (state.scanner_debug.reward_set_count > 0 && state.scanner_debug.reward_preview_linked_count == 0) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
-                        "RewardSets found, but not linked to visible map ids yet.");
-                }
-                ImGui::TextWrapped("Raw reward sets: %s",
-                    state.scanner_debug.reward_sets_preview.empty() ? "-" : state.scanner_debug.reward_sets_preview.c_str());
-                ImGui::TextWrapped("Unmatched reward sets: %s",
-                    state.scanner_debug.reward_unmatched_preview.empty() ? "-" : state.scanner_debug.reward_unmatched_preview.c_str());
-                if (reward_rows > 0 && ImGui::BeginTable("##reward-preview-table", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
-                    ImGui::TableSetupColumn("Kind");
-                    ImGui::TableSetupColumn("Type");
-                    ImGui::TableSetupColumn("Node");
-                    ImGui::TableSetupColumn("Preview");
-                    ImGui::TableHeadersRow();
-                    int shown = 0;
+                {
+                    int reward_rows = 0;
                     for (const auto& object : state.visible_objects) {
-                        if (object.reward_preview.empty()) {
-                            continue;
-                        }
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn(); ImGui::TextUnformatted(ObjectKind(object).c_str());
-                        ImGui::TableNextColumn(); ImGui::TextUnformatted(object.type.c_str());
-                        ImGui::TableNextColumn(); ImGui::Text("%d [%d,%d]", object.node, object.x, object.y);
-                        ImGui::TableNextColumn(); ImGui::TextWrapped("%s", object.reward_preview.c_str());
-                        if (++shown >= 16) {
-                            break;
-                        }
+                        if (!object.reward_preview.empty()) { ++reward_rows; }
                     }
-                    ImGui::EndTable();
+                    ImGui::Separator();
+                    ImGui::Text("Object reward previews %d | rows on screen %d",
+                        state.scanner_debug.object_reward_preview_count, reward_rows);
+                    ImGui::Text("Side RewardSets total %d | linked %d | unmatched %d",
+                        state.scanner_debug.reward_set_count,
+                        state.scanner_debug.reward_preview_linked_count,
+                        state.scanner_debug.reward_preview_unmatched_count);
+                    ImGui::TextWrapped("Object rewards: %s",
+                        state.scanner_debug.object_reward_sets_preview.empty()
+                            ? "-" : state.scanner_debug.object_reward_sets_preview.c_str());
+                    if (state.scanner_debug.reward_set_count > 0 && state.scanner_debug.reward_preview_linked_count == 0) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                            "RewardSets found, but not linked to visible map ids yet.");
+                    }
+                    ImGui::TextWrapped("Raw reward sets: %s",
+                        state.scanner_debug.reward_sets_preview.empty() ? "-" : state.scanner_debug.reward_sets_preview.c_str());
+                    ImGui::TextWrapped("Unmatched reward sets: %s",
+                        state.scanner_debug.reward_unmatched_preview.empty() ? "-" : state.scanner_debug.reward_unmatched_preview.c_str());
+                    if (reward_rows > 0 && ImGui::BeginTable("##reward-preview-table", 4,
+                            ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
+                        ImGui::TableSetupColumn("Kind");
+                        ImGui::TableSetupColumn("Type");
+                        ImGui::TableSetupColumn("Node");
+                        ImGui::TableSetupColumn("Preview");
+                        ImGui::TableHeadersRow();
+                        int shown = 0;
+                        for (const auto& object : state.visible_objects) {
+                            if (object.reward_preview.empty()) { continue; }
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn(); ImGui::TextUnformatted(ObjectKind(object).c_str());
+                            ImGui::TableNextColumn(); ImGui::TextUnformatted(object.type.c_str());
+                            ImGui::TableNextColumn(); ImGui::Text("%d [%d,%d]", object.node, object.x, object.y);
+                            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", object.reward_preview.c_str());
+                            if (++shown >= 16) { break; }
+                        }
+                        ImGui::EndTable();
+                    }
                 }
-
-                ImGui::EndTabItem();
+                break;
             }
-
-            if (ImGui::BeginTabItem("Scanner")) {
+            case 2: { // Scanner
                 const auto& scan = state.scanner_debug;
                 ImGui::Text("Source: %s | Status: %s | Confidence: %d%%",
                     scan.source.c_str(), scan.status.c_str(), scan.confidence);
@@ -869,9 +897,7 @@ void OverlayRenderer::Render(
                 ImGui::Text("DataSquads*:  0x%p", reinterpret_cast<void*>(scan.data_squads));
                 ImGui::Text("MapData*:     0x%p | %dx%d | groups: %d",
                     reinterpret_cast<void*>(scan.map_data),
-                    scan.map_size_x,
-                    scan.map_size_z,
-                    scan.map_data_object_group_count);
+                    scan.map_size_x, scan.map_size_z, scan.map_data_object_group_count);
                 ImGui::Text("Map object positions: %d", scan.map_object_position_count);
                 ImGui::TextWrapped("Map name: %s", scan.map_name.empty() ? "-" : scan.map_name.c_str());
                 ImGui::Text("MapObjects[]: 0x%p", reinterpret_cast<void*>(scan.map_data_objects_array));
@@ -880,14 +906,10 @@ void OverlayRenderer::Render(
                 ImGui::Text("DataSides*:   0x%p", reinterpret_cast<void*>(scan.data_sides));
                 ImGui::Text("DataTurnMode*:0x%p | phase %d | mode %d | side %d",
                     reinterpret_cast<void*>(scan.data_turn_mode),
-                    scan.turn_phase,
-                    scan.turn_mode,
-                    scan.turn_current_side_index);
+                    scan.turn_phase, scan.turn_mode, scan.turn_current_side_index);
                 ImGui::Text("SideArray*:   0x%p", reinterpret_cast<void*>(scan.side_array));
                 ImGui::Text("MySide*:      0x%p", reinterpret_cast<void*>(scan.my_side));
-                ImGui::Text("Side state:   %d (%s)",
-                    scan.side_current_state,
-                    SideStateName(scan.side_current_state));
+                ImGui::Text("Side state:   %d (%s)", scan.side_current_state, SideStateName(scan.side_current_state));
                 ImGui::Text("ResHeap*:     0x%p", reinterpret_cast<void*>(scan.res_heap));
                 ImGui::Text("RewardSets*:  0x%p | sets: %d",
                     reinterpret_cast<void*>(scan.side_reward_sets), scan.reward_set_count);
@@ -913,10 +935,9 @@ void OverlayRenderer::Render(
                     reinterpret_cast<void*>(scan.hero_party_units_list), scan.hero_party_unit_count);
                 ImGui::TextWrapped("Object counts: %s",
                     scan.map_object_counts_preview.empty() ? "-" : scan.map_object_counts_preview.c_str());
-                ImGui::EndTabItem();
+                break;
             }
-
-            if (ImGui::BeginTabItem("Database")) {
+            case 3: { // Database
                 ImGui::Text("State: %s", ToString(database.state).c_str());
                 ImGui::TextWrapped("%s", database.message.c_str());
                 ImGui::Text("Entries: %d | JSON: %d | Indexed: %d",
@@ -924,33 +945,33 @@ void OverlayRenderer::Render(
                 for (std::size_t i = 0; i < std::min<std::size_t>(database.tables.size(), 20); ++i) {
                     ImGui::BulletText("%s: %d", database.tables[i].name.c_str(), database.tables[i].files);
                 }
-                ImGui::EndTabItem();
+                break;
             }
-
-            if (ImGui::BeginTabItem("AI")) {
+            case 4: { // AI
                 ImGui::Text("State: %s | Model: %s", ToString(ai.state).c_str(), ai.model.c_str());
                 ImGui::TextWrapped("%s", ai.message.c_str());
                 ImGui::TextWrapped("In-DLL Ollama is disabled in this build to avoid game freezes/crashes. Use external arcanus_ai_bridge.exe later.");
                 if (ImGui::Button("Reset AI panel")) {
                     ollama_.Reset();
                 }
-                ImGui::EndTabItem();
+                break;
             }
-
-            if (ImGui::BeginTabItem("Context")) {
+            case 5: { // Context
                 const auto json = ToJson(state);
                 ImGui::TextWrapped("%s", json.c_str());
-                ImGui::EndTabItem();
+                break;
             }
-
-            if (ImGui::BeginTabItem("Logs")) {
+            case 6: { // Logs
                 for (const auto& entry : diagnostics_.Snapshot()) {
                     ImGui::Text("[%s] %s", ToString(entry.level).c_str(), entry.message.c_str());
                 }
-                ImGui::EndTabItem();
+                break;
+            }
+            default:
+                break;
             }
 
-            ImGui::EndTabBar();
+            ImGui::EndChild();
         }
         ImGui::End();
     }
